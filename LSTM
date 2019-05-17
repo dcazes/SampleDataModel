@@ -1,0 +1,60 @@
+import tensorflow as tf
+from keras.models import Sequential
+from keras.layers import Dense, LSTM, BatchNormalization, TimeDistributed
+from sklearn.model_selection import train_test_split
+import numpy as np
+import matplotlib.pyplot as plt
+
+-------------------------------------------------------------------------------------------
+
+#Heart Rate in Hz
+HR = 1
+
+#Scan Rate in Minutes per Volume
+SR = 7.5 / 100
+
+#Samples per Patient
+numSam = 100
+
+#Number of Patients
+numPat = 250
+
+A = [np.random.random() for i in range (numPat)]
+B = [np.random.random() for i in range (numPat)]
+
+x = [[[((A[j] * np.sin((HR / (2 * np.pi)) * (i * (SR * 60)))) + (B[j] * np.cos((HR / (2 * np.pi)) * (i * (SR * 60)))))] for i in range (numSam)] for j in range (numPat)]
+y = [(A[i] + B[i])/2 for i in range (numPat)]
+
+---------------------------------------------------------
+
+X = np.array(x, dtype=float)
+Y = np.array(y, dtype=float)
+
+x_train, x_test, y_train, y_test = train_test_split(X, Y, test_size = 0.2)
+
+------------------------------------------------------------
+
+model = Sequential ()
+
+model.add(LSTM((10), batch_input_shape = (None, numSam, 1), return_sequences=True))
+model.add(LSTM((10), return_sequences=True))
+model.add(LSTM((10), return_sequences=True))
+model.add(LSTM((1), return_sequences=False))
+model.compile(loss = 'mean_absolute_error', optimizer = 'adam', metrics = ['accuracy'])
+model.summary()
+
+-----------------------------------------------------------
+
+history = model.fit(x_train, y_train, epochs= 150, validation_data=(x_test, y_test))
+results = model.predict (x_test)
+
+-------------------------------------------------------------
+
+plt.scatter (range(200), results, c='r')
+plt.scatter (range(200), y_test, c='g')
+plt.show()
+
+-------------------------------------------------
+
+plt.plot(history.history['loss'])
+plt.show()
