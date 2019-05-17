@@ -50,8 +50,8 @@ results = model.predict (x_test)
 
 -------------------------------------------------------------
 
-plt.scatter (range(200), results, c='r')
-plt.scatter (range(200), y_test, c='g')
+plt.scatter (range(int(0.2 * numPat)), results, c='r')
+plt.scatter (range(int(0.2 * numPat)), y_test, c='g')
 plt.show()
 
 -------------------------------------------------
