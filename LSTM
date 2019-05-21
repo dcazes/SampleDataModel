@@ -5,7 +5,7 @@ from sklearn.model_selection import train_test_split
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy import signal
-
+---------------------------------------------------------------------------
 #Heart Rate in Hz
 HR = 1
 
@@ -38,9 +38,8 @@ X = np.array(x, dtype=float)
 Y = np.array(y, dtype=float)
 
 x_train, x_test, y_train, y_test = train_test_split(X, Y, test_size = 0.2)
-
+---------------------------------------------------------------------------
 model = Sequential ()
-
 
 model.add(LSTM((10), batch_input_shape = (None, numSam, 1), return_sequences=True))
 model.add(LSTM((10), return_sequences=True))
@@ -48,13 +47,12 @@ model.add(LSTM((10), return_sequences=True))
 model.add(LSTM((1), return_sequences=False))
 model.compile(loss = 'mean_absolute_error', optimizer = 'adam', metrics = ['accuracy'])
 model.summary()
-
+---------------------------------------------------------------------------
 history = model.fit(x_train, y_train, epochs= 150, validation_data=(x_test, y_test))
 results = model.predict (x_test)
-
 plt.scatter (range(int(0.2 * numPat)), results, c='r')
 plt.scatter (range(int(0.2 * numPat)), y_test, c='g')
 plt.show()
-
+---------------------------------------------------------------------------
 plt.plot(history.history['loss'])
 plt.show()
