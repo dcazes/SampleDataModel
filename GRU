@@ -33,8 +33,8 @@ bhOff = 45
 #Random Amplitude Generation
 A = [np.random.random() for i in range (numPat)]
 B = [np.random.random() for i in range (numPat)]
-C = [np.random.random() for i in range (50)]
-D = [np.random.random() for i in range (50)]
+C = [np.random.random() for i in range (testSize)]
+D = [np.random.random() for i in range (testSize)]
 
 #Time Series Creation
 x = [[[(A[j] * np.sin((2 * np.pi * (HR / 60)) * i)) + 
@@ -48,7 +48,7 @@ x_test = [[[(C[j] * np.sin((2 * np.pi * (HR / 60)) * i)) +
             (D[j] * np.cos((2 * np.pi * (HR / 60)) * i)) + 
             (signal.square (((2/(bhOn + bhOff)) * np.pi * i), duty = (bhOn/(bhOn + bhOff))))] for i in np.arange (0, SR * numSam, SR)] for j in range (50)]
 
-y_test = [(C[i] + D[i])/2 for i in range (50)]
+y_test = [(C[i] + D[i])/2 for i in range (testSize)]
 ------------------------------------------------
 #Convert Lists to Arrays
 X = np.array(x, dtype=float)
@@ -67,7 +67,7 @@ for i in range (numPat):
         X[i, j] = X[i, j] - samMin[i]
         X[i, j] = X[i, j] / (samMax[i] - samMin[i])
 
-for i in range (50):
+for i in range (testSize):
     for j in range (numSam):
         X_test[i, j] = X_test[i, j] - testMin[i]
         X_test[i, j] = X_test[i, j] / (testMax[i] - testMin[i])
@@ -85,8 +85,8 @@ for i in range (numPat):
     for j in range (numSam):
          X[i, j] = X[i, j] + noise[i, j]
             
-noise = np.random.normal(loc = 0, scale = 0.05, size = (50, numSam))
-for i in range (50):
+noise = np.random.normal(loc = 0, scale = 0.05, size = (testSize, numSam))
+for i in range (testSize):
     for j in range (numSam):
          X_test[i, j] = X[i, j] + noise[i, j]
 ------------------------------------------------------------------------
@@ -102,7 +102,7 @@ for i in range (numPat):
         X[i, j] = X[i, j] - samMin[i]
         X[i, j] = X[i, j] / (samMax[i] - samMin[i])
 
-for i in range (50):
+for i in range (testSize):
     for j in range (numSam):
         X_test[i, j] = X_test[i, j] - testMin[i]
         X_test[i, j] = X_test[i, j] / (testMax[i] - testMin[i])
@@ -140,8 +140,8 @@ predictions = model.predict (X_test)
 ------------------------------------------------------------
 #Plotting Predictions vs Actual Values
 plt.figure(figsize=(6,5))
-plt.scatter (range(50), predictions, c='r')
-plt.scatter (range(50), Y_test, c='g')
+plt.scatter (range(testSize), predictions, c='r')
+plt.scatter (range(testSize), Y_test, c='g')
 plt.xlabel ("Test Set", fontproperties = font_prop)
 plt.ylabel ("Output", fontproperties = font_prop)
 plt.legend (['Prediction', 'Actual'], loc = 4)
@@ -156,6 +156,6 @@ plt.ylabel("Loss", fontproperties = font_prop)
 plt.legend (['Training', 'Validation'], loc = 1)
 plt.show()
 ------------------------------------------------------
-error = [[Y_test[i] - predictions [i]] for i in range (50)]
+error = [[Y_test[i] - predictions [i]] for i in range (testSize)]
 error = np.array(error, dtype=float)
 print (np.mean(error))
