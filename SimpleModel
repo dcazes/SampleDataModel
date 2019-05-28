@@ -1,0 +1,140 @@
+import tensorflow as tf
+from keras.models import Sequential
+from keras.layers import LSTM, LeakyReLU, AveragePooling1D, MaxPooling1D, GRU
+from keras import optimizers
+from sklearn.model_selection import train_test_split
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.axes as ax
+import matplotlib.font_manager as fm
+from scipy import signal
+import datetime, os
+---------------------------
+#Standard Deviation of Noise
+nAmp = 0.1
+
+#Scan Rate in Seconds per Sample
+SR = 0.1
+
+#Samples per Patient
+numSam = 500
+
+#Heart Rate in BPM
+HR = 73
+
+#Number of Patients
+numPat = 500
+
+#Test Dataset Size
+testSize = 100
+
+#Font
+font_prop = fm.FontProperties(size=16)
+----------------------------------
+#Random Amplitude Generation
+A = [np.random.random() for i in range (numPat)]
+B = [np.random.random() for i in range (numPat)]
+C = [np.random.random() for i in range (testSize)]
+D = [np.random.random() for i in range (testSize)]
+
+#Time Series Creation
+x = [[[(A[j] * np.sin((2 * np.pi * (HR / 60)) * i)) + (B[j] * np.cos((2 * np.pi * (HR / 60)) * i))] for i in np.arange (0, SR * numSam, SR)] for j in range (numPat)]
+
+y = [(A[i] + B[i])/2 for i in range (numPat)]
+
+#Unseen Data
+x_test = [[[(C[j] * np.sin((2 * np.pi * (HR / 60)) * i)) + (D[j] * np.cos((2 * np.pi * (HR / 60)) * i))] for i in np.arange (0, SR * numSam, SR)] for j in range (testSize)]
+
+y_test = [(C[i] + D[i])/2 for i in range (testSize)]
+    -----------------------------------
+#Convert Lists to Arrays
+X = np.array(x, dtype=float)
+Y = np.array(y, dtype=float)
+X_test = np.array(x_test, dtype=float)
+Y_test = np.array(y_test, dtype=float)
+--------------------------------------------
+#Plotting Normalized Data
+plt.figure(figsize=(15,3))
+plt.plot (X[8, :, 0])
+plt.plot (X_test[5, :, 0])
+plt.xlabel ("Sample", fontproperties = font_prop)
+plt.ylabel("Amplitude", fontproperties = font_prop)
+plt.legend (['Time Series 1', 'Time Series 2'], loc = 1)
+--------------------------------------
+#Adding Noise
+noise = np.random.normal(loc = 0, scale = nAmp, size = (numPat, numSam))
+for i in range (numPat):
+    for j in range (numSam):
+        X[i, j] = X[i, j] + noise[i, j]
+            
+noise = np.random.normal(loc = 0, scale = nAmp, size = (testSize, numSam))
+for i in range (testSize):
+    for j in range (numSam):
+        X_test[i, j] = X_test[i, j] + noise[i, j]
+-------------------------
+samMax = np.amax (X, axis = 0)
+testMax = np.amax (X_test, axis = 0)
+samMax = np.amax (samMax, axis = 0)
+testMax = np.amax (testMax, axis = 0)
+for i in range (numPat):
+    for j in range (numSam):
+        X[i, j] = X[i, j] / samMax
+            
+for i in range (testSize):
+    for j in range (numSam):
+        X_test[i, j] = X_test[i, j] / testMax
+---------------------------------------------
+#Model
+model = Sequential ()
+#opt = optimizers.Adam(lr=0.0005, beta_1=0.9, beta_2=0.999, epsilon=None, decay=0.0, amsgrad=False)
+
+#model.add(AveragePooling1D(pool_size=3, strides=None, padding='same', batch_input_shape = (None, numSam, 1)))
+model.add(GRU((10), return_sequences=True, batch_input_shape = (None, numSam, 1)))
+model.add(LeakyReLU(alpha = 0.2))
+#model.add(MaxPooling1D(pool_size=2, strides=None, padding='valid'))
+model.add(GRU((10), return_sequences=True))
+model.add(LeakyReLU(alpha = 0.2))
+model.add(GRU((1), return_sequences=False))
+model.add(LeakyReLU(alpha = 0.2))
+model.compile(loss = 'mean_squared_error', optimizer = 'adam')
+-------------------------------------------
+#Validation Data Splitting
+x_train, x_val, y_train, y_val = train_test_split(X, Y, test_size = 0.2, random_state = 1)
+
+# Add ", callbacks=[tensorboard_callback]" to model.fit when tensorboard is successful
+history = model.fit(x_train, y_train, epochs= 100,  validation_data=(x_val, y_val))
+
+#Testing the Model on Unseen Dataset
+predictions = model.predict (X_test)
+--------------------------------------------
+error = [[np.absolute(Y_test[i] - predictions [i])] for i in range (testSize)]
+avgError = (np.mean(error))
+
+#Plotting Predictions vs Actual Values
+plt.figure(figsize=(15,5))
+plt.scatter (range(testSize), predictions, c='r')
+plt.scatter (range(testSize), Y_test, c='g')
+plt.xlabel ("Test Set", fontproperties = font_prop)
+plt.ylabel ("Sinusoidal Amplitude ", fontproperties = font_prop)
+plt.legend (['Prediction', 'Actual'], loc = 4)
+for i in range (0,testSize, 2):
+    plt.plot([i,i], [0,1], color = 'k', linestyle=':', linewidth=0.75)
+plt.show()
+
+#Plotting Loss Over Epochs
+plt.figure(figsize=(6,5))
+plt.plot(history.history['loss'])
+plt.plot(history.history['val_loss'])
+plt.xlabel("Epoch", fontproperties = font_prop)
+plt.ylabel("Loss", fontproperties = font_prop)
+plt.legend (['Training', 'Validation'], loc = 1)
+plt.show()
+----------------------------------
+avgError
+---------------
+#Plot Histograms of Components
+plt.hist(A)
+plt.show()
+plt.hist(B)
+plt.show()
+plt.hist (y)
