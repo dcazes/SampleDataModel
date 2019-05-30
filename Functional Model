@@ -1,0 +1,263 @@
+#######################################################################################################################
+## Project Name:    TempPulseNet                                                                                     ##
+## Project          Description: A data generator and an RNN to seperate the multiple components of a complex signal ##
+## Author:          Daniel Cazes                                                                                     ##
+## Date Created:    May 13, 2019                                                                                     ##
+## Date of Latest   Revision: Today                                                                                  ##
+#######################################################################################################################
+
+##########
+# Import #
+##########
+
+import tensorflow as tf
+from keras.models import Model
+from keras.layers import Dense, GRU, Input, concatenate, AveragePooling1D
+from keras.optimizers import Adam
+from sklearn.model_selection import train_test_split
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+from scipy import signal
+import csv
+--------------------------------------------------------
+############################
+# Graph and File Variables #
+############################
+
+#Font
+font_prop = fm.FontProperties(size=16)
+
+#Predictions Vs Actual Name
+figName = "OFTest"
+
+#Output Folder
+path = "TempPulseNet/"
+
+#Disparity Error CSV
+errorFile = "TPNdata.csv"
+
+#Run Details (Explain how to compare this Error to other runs' error)
+dets = "Average Pooling Layer poolsize = 4, strides = 2"
+
+#############################
+# Data Generation Variables #
+#############################
+
+#Range of Standard Deviation of Noise
+stdvNoiseTop = 0
+stdvNoiseBot = 0
+
+#Range of Number of Patients
+numPatTop = 1000
+numPatBot = 1000
+
+#Samples per Patient
+numSam = 150
+
+#Test Dataset Size
+testSize = 500
+
+#Scan Rate in Seconds per Sample
+SR = 0.075
+
+#Center for Heart Rate Normal Distribution (BPM)
+cHR = 69
+
+#Std. Dev. of Heart Rate (BPM)
+stdvHR = 5
+
+#Center for Breathing Rate Normal Distribution (BMP)
+cBR = 10
+
+#Std. Dev. of Heart Rate(BPM)
+stdvBR = 2
+
+############################
+# Model Training Variables #
+############################
+
+#Number of Epochs
+nEpoch = 100
+
+#Validation Set Size
+valSize = 0.2
+
+#Optimizer
+opt = 'adam'
+
+#Loss Function
+lossFunc = 'MSE'
+---------------------------------------------------------
+#####################
+# Dataset Generator # 
+#####################
+
+def dataGen (noiseLevel):
+    
+    #Random Amplitude Generation
+    A = np.random.normal(loc = 0.5, scale = 0.2, size = numPat)
+    B = [np.random.random() for i in range (numPat)]
+    C = [np.random.random() for i in range (numPat)]
+    D = np.random.normal(loc = 0.5, scale = 0.2, size = testSize)
+    E = [np.random.random() for i in range (testSize)]
+    F = [np.random.random() for i in range (testSize)]
+    
+    #Normally Distributed Random Frequency Generation
+    trainHR = np.random.normal(loc = cHR, scale = stdvHR, size = numPat)
+    trainBR = np.random.normal(loc = cBR, scale = stdvBR, size = numPat)
+    testHR = np.random.normal(loc = cHR, scale = stdvHR, size = testSize)
+    testBR = np.random.normal(loc = cBR, scale = stdvBR, size = testSize)
+
+    #Training Time Series Creation
+    x = [[[(A[j] * np.sin((2 * np.pi * (trainHR[j] / 60)) * i)) +
+           (B[j] * np.cos((2 * np.pi * (trainHR[j] / 60)) * i)) +
+           (C[j] * np.cos((2 * np.pi * (trainBR[j] / 60)) * (i)))] for i in np.arange (0, SR * numSam, SR)] for j in range (numPat)]
+
+    #Corresponding Amplitudes
+    y = [(A[i], C[i]) for i in range (numPat)]
+
+    #Unseen Data Creation
+    x_test = [[[(D[j] * np.sin((2 * np.pi * (testHR[j] / 60)) * i)) +
+                (E[j] * np.cos((2 * np.pi * (testHR[j] / 60)) * i)) +
+                (F[j] * np.cos((2 * np.pi * (testBR[j] / 60)) * (i)))] for i in np.arange (0, SR * numSam, SR)] for j in range (testSize)]
+
+    y_test = [(D[i], F[i]) for i in range (testSize)]
+    
+    #Convert Lists to Arrays
+    X = np.array(x, dtype=float)
+    Y = np.array(y, dtype=float)
+    X_test = np.array(x_test, dtype=float)
+    Y_test = np.array(y_test, dtype=float)
+    
+    #Noise Generation
+    trainNoise = np.random.normal(loc = 0, scale = noiseLevel, size = (numPat, numSam))
+    testNoise = np.random.normal(loc = 0, scale = stdvNoise, size = (testSize, numSam))
+    
+    #Adding Noise to Signal
+    for i in range (numPat):
+        for j in range (numSam):
+            X[i, j] = X[i, j] + trainNoise[i, j]
+            
+    for i in range (testSize):
+        for j in range (numSam):
+            X_test[i, j] = X_test[i, j] + testNoise[i, j]
+    
+    #Normalizing Between -1 and 1
+    #Find Maximum Value in All Samples
+#    samMax = np.amax (X)
+#    testMax = np.amax (X_test)
+    
+    #Divide All Values by Max Value
+#    for i in range (numPat):
+#        for j in range (numSam):
+#            X[i, j] = X[i, j] / samMax
+            
+#    for i in range (testSize):
+#        for j in range (numSam):
+#            X_test[i, j] = X_test[i, j] / testMax
+        
+    return X, Y, X_test, Y_test
+----------------------------------------------
+#######################
+# Plotting Input Data #
+#######################
+def pltInput ():
+    plt.figure(figsize=(15,3))
+    plt.plot (X[8, :, 0])
+    plt.plot (X_test[5, :, 0])
+    plt.xlabel ("Sample", fontproperties = font_prop)
+    plt.ylabel("Amplitude", fontproperties = font_prop)
+    plt.legend (['Time Series 1', 'Time Series 2'], loc = 1)
+------------------------------------------------------------------
+#########
+# Model #
+#########
+
+def TPNet(X, Y, X_test):
+    
+    initial = Input(shape = (numSam, 1))
+    avgPool = AveragePooling1D(pool_size=4, strides = 2,padding= 'same')(initial)
+    
+    fGRU1 = GRU((20), return_sequences=True) (avgPool)
+    fGRU2 = GRU((20), return_sequences=True) (fGRU1)
+    
+    sGRU1 = GRU((20), return_sequences=True) (initial)
+    sGRU2 = GRU((20), return_sequences=True) (sGRU1)
+    
+    conc = concatenate([fGRU2, sGRU2], axis = 1)
+    
+    oGRU1 = GRU((20), return_sequences=True) (conc)
+    output = GRU((2), return_sequences=False) (oGRU1)
+    
+    model = Model(inputs = initial, outputs = output)
+    model.compile(loss = lossFunc, optimizer = opt)    
+    
+    #Validation Data Splitting
+    x_train, x_val, y_train, y_val = train_test_split(X, Y, test_size = valSize)
+
+    #Add ", callbacks=[tensorboard_callback]" to model.fit when tensorboard is successful
+    history = model.fit(x_train, y_train, epochs= nEpoch,  validation_data=(x_val, y_val))
+
+    #Testing the Model on Unseen Dataset
+    predictions = model.predict (X_test)
+    
+    return history, predictions
+----------------------------------------------
+######################################
+#  Error Calculation / Write to File #
+######################################
+def error(Y_test, pred):
+    disp = [[100 * ((Y_test[i, 0] - pred [i, 0]) / (Y_test[i, 0] + pred [i, 0]))] for i in range (testSize)]
+    HRDisp = (np.mean(disp))
+    
+    disp = [[100 * ((Y_test[i, 1] - pred [i, 1]) / (Y_test[i, 1] + pred [i, 1]))] for i in range (testSize)]
+    BRDisp = (np.mean(disp))
+    
+    disp = [[100 * ((Y_test[i, :] - pred [i, :]) / (Y_test[i, :] + pred [i, :]))] for i in range (testSize)]
+    avgDisp = (np.mean(disp))
+    
+    row = [numPat, stdvNoise, HRDisp, BRDisp, avgDisp, dets]
+    with open(path + errorFile, 'a') as csvFile:
+        writer = csv.writer(csvFile)
+        writer.writerow(row)
+    csvFile.close()
+----------------------------------------------
+#############################
+# Plot Predictions vs Truth #
+#############################
+
+def pltPreds (Y_test, pred):
+    
+    plt.figure(figsize=(15,5))
+    plt.scatter (range(50), pred[0:50, 0], marker = '.', c='g')
+    plt.scatter (range(50), Y_test[0:50, 0], marker ='x', c='g')
+    plt.scatter (range(50), pred[0:50, 1], marker = '.', c='r')
+    plt.scatter (range(50), Y_test[0:50, 1], marker = 'x', c='r')
+    plt.title("Pulse Amplitude (PA) and Breath Amplitude (BA) Predictions vs Truth", fontproperties = font_prop)
+    plt.xlabel ("Test Set", fontproperties = font_prop)
+    plt.ylabel ("Sinusoidal Amplitude ", fontproperties = font_prop)
+    plt.legend (['PA Prediction', 'PA Truth', 'BA Prediction', 'BA Truth'], loc = 4)
+    for i in range (0,50, 2):
+        plt.plot([i,i], [0,1], color = 'k', linestyle=':', linewidth=0.75)
+    plt.tight_layout()
+    plt.savefig(path + figName + "-NP%s-NL%s.png" %(numPat, stdvNoise), bbox= 'tight')
+--------------------------------------------------------------------------------------------
+########
+# Main #
+########
+for stdvNoise in np.around(np.arange (stdvNoiseBot, stdvNoiseTop + 0.001, 0.1), 3):
+    for numPat in range (numPatBot,numPatTop + 1, 50):
+        X, Y, X_test, Y_test = dataGen (stdvNoise)
+        pltInput()
+        hist, preds = TPNet(X, Y, X_test)
+        error(Y_test, preds)
+        pltPreds(Y_test, preds)
+----------------------------------------------
+plt.figure(figsize=(6,5))
+plt.plot(hist.history['loss'])
+plt.plot(hist.history['val_loss'])
+plt.xlabel("Epoch", fontproperties = font_prop)
+plt.ylabel("Loss", fontproperties = font_prop)
+plt.legend (['Training', 'Validation'], loc = 1)
+plt.show()
