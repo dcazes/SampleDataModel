@@ -2,7 +2,7 @@ read = open('TempPulseNet/Vars.txt', 'r+')
 tmp = read.readlines()    
 noise = int(tmp[0])
 read.close()
------------------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------------------
 #######################################################################################################################
 ## Project Name:    TempPulseNet                                                                                     ##
 ## Project          Description: A data generator and an RNN to seperate the multiple components of a complex signal ##
@@ -24,26 +24,8 @@ import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 from scipy import signal
 import csv
------------------------------------------------------------------------------------------------------------------------
-############################
-# Graph and File Variables #
-############################
-
-#Font
-font_prop = fm.FontProperties(size=16)
-
-#Predictions Vs Actual Name
-figName = "MultiTrial WorkAround"
-
-#Output Folder
-path = "TempPulseNet/"
-
-#Disparity Error CSV
-errorFile = "TPNdata.csv"
-
-#Run Details (Explain how to compare this Error to other runs' error)
-dets = "MultiTrial WorkAround"
-
+from keras.utils import plot_model
+----------------------------------------------------------------------------------------------------------------------------
 #############################
 # Data Generation Variables #
 #############################
@@ -59,10 +41,10 @@ stdvNoise = noise / 20
 numPat = 100
 
 #Samples per Patient
-numSam = 200
+numSam = 300
 
 #Test Dataset Size
-testSize = 500
+testSize = 50
 
 #Scan Rate in Seconds per Sample
 SR = 0.1
@@ -84,7 +66,7 @@ stdvBR = 2
 ############################
         
 #Number of Epochs
-nEpoch = 150
+nEpoch = 100
 
 #Validation Set Size
 valSize = 0.2
@@ -96,8 +78,41 @@ opt = 'adam'
 lossFunc = 'MSE'
 
 #Repitition
-reps = 20
------------------------------------------------------------------------------------------------------------------------
+reps = 1
+
+############################
+# Graph and File Variables #
+############################
+
+#Font
+font_prop = fm.FontProperties(size=16)
+
+#Predictions Vs Actual Name
+figName = "MultiTrial WorkAround"
+
+#Output Folder
+path = "TempPulseNet/"
+
+#BR Hist Folder
+bhf = "BRHist/"
+
+#HR Hist Folder
+hhf = "HRHist/"
+
+#HR File Name
+dispFile = "Disp%s.csv" %stdvNoise
+
+#ScatterPlot Folder
+spf = "Scatter/"
+
+#Disparity Error CSV
+errorFile = "TPNdata.csv"
+
+#Run Details (Explain how to compare this Error to other runs' error)
+dets = "MultiTrial WorkAround"
+
+GRAPHVIZ_DOT= "release/bin/dot.exe"
+----------------------------------------------------------------------------------------------------------------------------
 #####################
 # Dataset Generator # 
 #####################
@@ -120,7 +135,7 @@ def dataGen (noiseLevel):
 
     #Training Time Series Creation
     x = [[[(A[j] * np.sin((2 * np.pi * (trainHR[j] / 60)) * i)) +
-           (B[j] * np.cos((2 * np.pi * (trainHR[j] / 60)) * i)) +
+           #(B[j] * np.cos((2 * np.pi * (trainHR[j] / 60)) * i)) +
            (C[j] * np.cos((2 * np.pi * (trainBR[j] / 60)) * (i)))] for i in np.arange (0, SR * numSam, SR)] for j in range (numPat)]
 
     #Corresponding Amplitudes
@@ -140,17 +155,18 @@ def dataGen (noiseLevel):
     Y_test = np.array(y_test, dtype=float)
     
     #Noise Generation
-    trainNoise = np.random.normal(loc = 0, scale = noiseLevel, size = (numPat, numSam))
-    testNoise = np.random.normal(loc = 0, scale = stdvNoise, size = (testSize, numSam))
-    
     #Adding Noise to Signal
     for i in range (numPat):
+        patNoise = np.random.rand() * noiseLevel
+        trainNoise = np.random.normal(loc = 0, scale = patNoise, size = numSam)
         for j in range (numSam):
-            X[i, j] = X[i, j] + trainNoise[i, j]
+            X[i, j] = X[i, j] + trainNoise[j]
             
     for i in range (testSize):
+        tPatNoise = np.random.rand() * noiseLevel
+        testNoise = np.random.normal(loc = 0, scale = tPatNoise, size = numSam)
         for j in range (numSam):
-            X_test[i, j] = X_test[i, j] + testNoise[i, j]
+            X_test[i, j] = X_test[i, j] + testNoise[j]
         
     #plt.hist(A)
     #plt.show()
@@ -161,7 +177,7 @@ def dataGen (noiseLevel):
     #plt.hist(trainBR)
     #plt.show()
     return X, Y, X_test, Y_test
------------------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------------------
 #######################
 # Plotting Input Data #
 #######################
@@ -173,7 +189,7 @@ def pltInput ():
     plt.ylabel("Amplitude", fontproperties = font_prop)
     plt.legend (['Time Series 1', 'Time Series 2'], loc = 1)
     plt.show()
------------------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------------------
 #########
 # Model #
 #########
@@ -181,7 +197,7 @@ def pltInput ():
 def TPNet(X, Y, X_test):
     
     initial = Input(shape = (numSam, 1))
-    #avgPool = Conv1D(20, kernel_size = 3, strides=1, padding='same', activation= None)(initial)
+    #avgPool = AveragePooling1D(pool_size = 3)(initial)
     
     fGRU1 = GRU((20), return_sequences=True) (initial)
     fGRU2 = GRU((20), return_sequences=True) (fGRU1)
@@ -197,6 +213,8 @@ def TPNet(X, Y, X_test):
     model = Model(inputs = initial, outputs = output)
     model.compile(loss = lossFunc, optimizer = opt)
     
+    plot_model(model, to_file= path + 'model.png')
+    
     #Validation Data Splitting
     x_train, x_val, y_train, y_val = train_test_split(X, Y, test_size = valSize)
 
@@ -205,9 +223,9 @@ def TPNet(X, Y, X_test):
 
     #Testing the Model on Unseen Dataset
     predictions = model.predict (X_test)
-    
+
     return history, predictions
------------------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------------------
 ######################################
 #  Error Calculation / Write to File #
 ######################################
@@ -215,33 +233,26 @@ def error(Y_test, pred):
     
     #Disparity Error for Heart Rate signal
     dispHR = [100 * ((Y_test[i, 0] - pred [i, 0]) / (Y_test[i, 0] + pred [i, 0])) for i in range (testSize)]
-    HRDisp = (np.mean(dispHR))
-    
-    #Disparity Error for Breathing Rate signal
     dispBR = [100 * ((Y_test[i, 1] - pred [i, 1]) / (Y_test[i, 1] + pred [i, 1])) for i in range (testSize)]
-    BRDisp = (np.mean(dispBR))
-    
+    with open(path + dispFile, 'a') as csvFile:
+        for i in range (testSize):
+            row = [numPat, numSam, dispHR[i], dispBR[i]]
+            writer = csv.writer(csvFile)
+            writer.writerow(row)
+    csvFile.close()
+
     #Average Disparity Error
-    dispAvg = [100 * ((Y_test[i, :] - pred [i, :]) / (Y_test[i, :] + pred [i, :])) for i in range (testSize)]
-    avgDisp = (np.mean(dispAvg))
-    
+    #dispAvg = [100 * ((Y_test[i, :] - pred [i, :]) / (Y_test[i, :] + pred [i, :])) for i in range (testSize)]
+
     valLossLow = np.amin(hist.history['val_loss'])
     epLossLow = np.argmin(hist.history['val_loss'])
-    
-    hrDispMax = np.ceil(np.amax(dispHR) / 10) * 10
-    hrDispMin = np.floor(np.amin(dispHR) / 10) * 10
-    brDispMax = np.ceil(np.amax(dispBR) / 10) * 10
-    brDispMin = np.floor(np.amin(dispBR) / 10) * 10
-    
-    #print(hrDispMax, hrDispMin, brDispMax, brDispMin)
-    #print (hrBins, brBins)
     
     hrHist = plt.figure()
     plt.title("Heart Amplitude Disparity Histogram", fontproperties = font_prop)
     plt.xlabel ("Disparity", fontproperties = font_prop)
     plt.hist(dispHR, bins = 50)
     plt.tight_layout()
-    plt.savefig(path + figName + "_histHR_NP%s_NL%s_ T%s.png" %(numPat, stdvNoise, trial+1), bbox= 'tight')
+    plt.savefig(path + hhf + figName + "_histHR_NP%s_NL%s_ T%s.png" %(numPat, stdvNoise, trial+1), bbox= 'tight')
     plt.close(hrHist)
     
     brHist = plt.figure()
@@ -249,15 +260,15 @@ def error(Y_test, pred):
     plt.xlabel ("Disparity", fontproperties = font_prop)
     plt.hist(dispBR, bins = 50)
     plt.tight_layout()
-    plt.savefig(path + figName + "_histBR_NP%s_NL%s_T%s.png" %(numPat, stdvNoise, trial+1), bbox= 'tight')
+    plt.savefig(path + bhf + figName + "_histBR_NP%s_NL%s_T%s.png" %(numPat, stdvNoise, trial+1), bbox= 'tight')
     plt.close(brHist)
     
-    row = [numPat, numSam, trial+1 , SR, stdvNoise, HRDisp, BRDisp, avgDisp, valLossLow, epLossLow, dets]
-    with open(path + errorFile, 'a') as csvFile:
-        writer = csv.writer(csvFile)
-        writer.writerow(row)
-    csvFile.close()
------------------------------------------------------------------------------------------------------------------------
+    #row = [numPat, numSam, trial+1 , SR, stdvNoise, HRDisp, BRDisp, avgDisp, valLossLow, epLossLow, dets]
+    #with open(path + errorFile, 'a') as csvFile:
+    #    writer = csv.writer(csvFile)
+    #    writer.writerow(row)
+    #csvFile.close()
+----------------------------------------------------------------------------------------------------------------------------
 #############################
 # Plot Predictions vs Truth #
 #############################
@@ -275,9 +286,9 @@ def pltPreds (Y_test, pred):
     for i in range (0,50, 2):
         plt.plot([i,i], [0,1], color = 'k', linestyle=':', linewidth=0.75)
     plt.tight_layout()
-    plt.savefig(path + figName + "-NP%s-NL%s_T%s.png" %(numPat, stdvNoise, trial+1), bbox= 'tight')
+    plt.savefig(path + spf +figName + "-NP%s-NL%s_T%s.png" %(numPat, stdvNoise, trial+1), bbox= 'tight')
     plt.close(fig)
------------------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------------------
 ########
 # Main #
 ########
@@ -291,8 +302,8 @@ for trial in range(reps):
     hist, preds = TPNet(X, Y, X_test)
     error(Y_test, preds)
     pltPreds(Y_test, preds)
------------------------------------------------------------------------------------------------------------------------
-if noise > 20:
+----------------------------------------------------------------------------------------------------------------------------
+if noise > 40:
     poopy
 else:
     read = open('TempPulseNet/Vars.txt', 'r+')
@@ -301,7 +312,7 @@ else:
     read.seek(0)
     read.write(str(noise))
 read.close()
------------------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------------------
 %%javascript
 //Python.exe Memory Error Work Around
 function restart_run_all(){
@@ -311,7 +322,7 @@ function restart_run_all(){
     }, 10000)
 }
 restart_run_all()
------------------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------------------
 plt.figure(figsize=(6,5))
 plt.plot(hist.history['loss'])
 plt.plot(hist.history['val_loss'])
