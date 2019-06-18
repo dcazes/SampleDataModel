@@ -1,0 +1,292 @@
+read = open('TempPulseNet/Vars.txt', 'r+')
+tmp = read.readlines()
+noise = int(tmp[0])
+read.close()
+-----------------------------------------------------------------------------------------------------------------------
+#######################################################################################################################
+## Project Name:    TempPulseNet                                                                                     ##
+## Project          Description: A data generator and an RNN to seperate the multiple components of a complex signal ##
+## Author:          Daniel Cazes                                                                                     ##
+## Date Created:    May 13, 2019                                                                                     ##
+## Date of Latest   Revision: Today                                                                                  ##
+#######################################################################################################################
+
+##########
+# Import #
+##########
+import tensorflow as tf
+import numpy as np
+from keras.models import Sequential
+from keras.layers import ConvLSTM2D
+from keras.optimizers import Adam
+from sklearn.model_selection import train_test_split
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+import csv
+from keras.utils import plot_model
+from scipy.ndimage import gaussian_filter
+from keras.callbacks import TensorBoard
+-----------------------------------------------------------------------------------------------------------------------
+#############################
+# Data Generation Variables #
+#############################
+
+#Standard Deviation of Noise
+stdvNoise = noise / 20
+
+#Number of Patients
+numPat = 100
+
+#Samples per Patient
+numSam = 150
+
+#Test Dataset Size
+testSize = 50
+
+#Scan Rate in Seconds per Sample
+SR = 0.1
+
+#Center for Heart Rate Normal Distribution (BPM)
+cHR = 69
+    
+#Std. Dev. of Heart Rate (BPM)
+stdvHR = 5
+    
+#Center for Breathing Rate Normal Distribution (BMP)
+cBR = 13
+    
+#Std. Dev. of Heart Rate(BPM)
+stdvBR = 2
+
+############################
+# Model Training Variables #
+############################
+        
+#Number of Epochs
+nEpoch = 75
+
+#Validation Set Size
+valSize = 0.2
+
+#Optimizer
+opt = 'adam'
+
+#Loss Function
+lossFunc = 'MSE'
+
+#Repitition
+reps = 1
+
+#Tensorboard callback
+tensorboard_callback = TensorBoard(log_dir='./logs')
+
+############################
+# Graph and File Variables #
+############################
+
+#Font
+font_prop = fm.FontProperties(size=16)
+
+#Predictions Vs Actual Name
+figName = "ConvLSTM"
+
+#Output Folder
+path = "TempPulseNet/"
+
+#BR Hist Folder
+bhf = "BRHist/"
+
+#HR Hist Folder
+hhf = "HRHist/"
+
+#HR File Name
+dispFile = "Disp%s.csv" %stdvNoise
+
+#ScatterPlot Folder
+spf = "Scatter/"
+
+#Disparity Error CSV
+errorFile = "TPNdata.csv"
+
+#Run Details (Explain how to compare this Error to other runs' error)
+dets = "Test"
+
+#GraphViz 
+GRAPHVIZ_DOT= "release/bin/dot.exe"
+-----------------------------------------------------------------------------------------------------------------------
+#####################
+# Dataset Generator # 
+#####################
+
+def dataGen (noiseLevel):
+    
+    #Random Amplitude Generation
+    A = np.random.random()
+    C = np.random.random()
+    
+    #Normally Distributed Frequency Generation
+    HR = np.random.normal(loc = cHR, scale = stdvHR, size = 1)
+    BR = np.random.normal(loc = cBR, scale = stdvBR, size = 1)
+
+    #Training Time Series Creation
+    x = [(A * np.sin((2 * np.pi * (HR / 60)) * i)) +
+         (C * np.cos((2 * np.pi * (BR / 60)) * (i))) for i in np.arange (0, SR * numSam, SR)]
+
+    #Ouput Map is same shape as input plus 3rd dimension for individual components
+    Y = np.array([(A, C)], dtype=float)
+    output = np.zeros ((9, 3, 2))
+    for i in range(9):
+        for j in range(3):
+            output [i, j, :] = Y
+    
+    #Make time series into 3D + time
+    volumes = np.zeros((numSam, 3, 3, 3))
+    volumes[:, 1, 1, 1] = np.reshape(x, (numSam))
+    
+    #Smooth the signal across three dimensions
+    smeared_volumes = gaussian_filter(volumes, sigma=(0, 0.5, 0.5, 0.5), mode='constant')
+    
+    #Noise Generation
+    voxNoise = np.random.rand() * noiseLevel
+    patNoise = np.random.normal(loc = 0, scale = voxNoise, size = (numSam, 3, 3, 3))
+    
+    #Adding Noise to Signal
+    for i in range (3):
+        for j in range (3):
+            for k in range (3):
+                smeared_volumes[:, i, j, k] = smeared_volumes[:, i, j, k] + patNoise[:, i, j, k]
+    
+    #Data Reshaping to 2D + time
+    reshaped_volumes = np.zeros((numSam, 9, 3, 1))
+    reshaped_volumes[:, 0:3, :, 0] = smeared_volumes [:, :, :, 0]
+    reshaped_volumes[:, 3:6, :, 0] = smeared_volumes [:, :, :, 1]
+    reshaped_volumes[:, 6:9, :, 0] = smeared_volumes [:, :, :, 2]
+
+    return reshaped_volumes, output
+-----------------------------------------------------------------------------------------------------------------------
+#######################
+# Plotting Input Data #
+#######################
+def pltInput (inputs):
+    plt.figure(figsize=(15,3))
+    plt.plot (inputs[8, :, 1, 1, 0])
+    plt.plot (inputs[8, :, 1, 0, 0])
+    plt.plot (inputs[8, :, 0, 1, 0])
+    plt.plot (inputs[8, :, 3, 1, 0])
+    plt.xlabel ("Sample", fontproperties = font_prop)
+    plt.ylabel("Amplitude", fontproperties = font_prop)
+    plt.legend (['Time Series 1', 'Time Series 2', 'Time Series 3'], loc = 1)
+    plt.show()
+-----------------------------------------------------------------------------------------------------------------------
+#########
+# Model #
+#########
+
+def TPNet(volumes, amplitudes):
+    
+    model = Sequential()
+    
+    #model.add(Reshape((numSam, 9, 3, 1), input_shape = (numSam, 3, 3, 3)))
+    model.add(ConvLSTM2D(4, kernel_size = (3,3), strides=(1, 1), padding='same', return_sequences=True, input_shape = (numSam, 9, 3, 1)))
+    model.add(ConvLSTM2D(2, kernel_size = (3,3), strides=(1, 1), padding='same', return_sequences=False))
+    model.compile(optimizer = opt, loss = lossFunc)
+    
+    #plot_model(model, to_file= path + 'model.png')
+
+    x_train, x_val, y_train, y_val = train_test_split(vols, amps, test_size = 0.2, random_state = 1)
+    history = model.fit(x_train, y_train, epochs= nEpoch,  validation_data=(x_val, y_val), callbacks=[tensorboard_callback])
+    
+    #Testing the Model on Unseen Dataset
+    testVols = np.zeros((testSize, numSam, 9, 3, 1))
+    testAmps = np.zeros((testSize, 9, 3, 2))
+    for i in range (testSize):
+        testVols[i, :, :, :, :], testAmps[i, :, :, :] = dataGen (stdvNoise)
+    predictions = model.predict (testVols)
+    
+    return history, predictions, testAmps
+-----------------------------------------------------------------------------------------------------------------------
+######################################
+#  Error Calculation / Write to File #
+######################################
+def error(Y_test, pred):
+    
+    #Disparity Error for Heart Rate signal
+    dispHR = 100 * ((Y_test[:, :, :, 0] - pred [:, :, :, 0]) / (Y_test[:, :, :, 0] + pred [:, :, :, 0]))
+    dispBR = 100 * ((Y_test[:, :, :, 1] - pred [:, :, :, 1]) / (Y_test[:, :, :, 1] + pred [:, :, :, 1]))
+    
+    #Calculate Average Disparity Over All Voxels
+    avgDispHR = np.mean(dispHR, axis = (1, 2))
+    avgDispBR = np.mean(dispBR, axis = (1, 2))
+
+    #Write 
+    with open(path + dispFile, 'a') as csvFile:
+        for i in range (testSize):
+            row = [numPat, numSam, dispHR[i], dispBR[i]]
+            writer = csv.writer(csvFile)
+            writer.writerow(row)
+    csvFile.close()
+
+    valLossLow = np.amin(hist.history['val_loss'])
+    epLossLow = np.argmin(hist.history['val_loss'])
+    
+    #Histogram for Heart Rate Frequency Prediction Disparity
+    hrHist = plt.figure()
+    plt.title("Heart Amplitude Disparity Histogram", fontproperties = font_prop)
+    plt.xlabel ("Disparity", fontproperties = font_prop)
+    plt.hist(avgDispHR, bins = 50)
+    plt.tight_layout()
+    plt.savefig(path + hhf + figName + "_histHR_NP%s_NL%s_ T%s.png" %(numPat, stdvNoise, trial+1), bbox= 'tight')
+    plt.close(hrHist)
+    
+    #Histogram for Breath Rate Frequency Prediction Disparity
+    brHist = plt.figure()
+    plt.title("Breath Amplitude Disparity Histogram", fontproperties = font_prop)
+    plt.xlabel ("Disparity", fontproperties = font_prop)
+    plt.hist(avgDispBR, bins = 50)
+    plt.tight_layout()
+    plt.savefig(path + bhf + figName + "_histBR_NP%s_NL%s_T%s.png" %(numPat, stdvNoise, trial+1), bbox= 'tight')
+    plt.close(brHist)
+-----------------------------------------------------------------------------------------------------------------------
+########
+# Main #
+########
+
+for trial in range(reps):
+    print(stdvNoise)
+    vols = np.zeros((numPat, numSam, 9, 3, 1))
+    amps = np.zeros((numPat, 9, 3, 2))
+    for i in range (numPat):
+        vols[i, :, :, :, :], amps[i, :, :, :] = dataGen (stdvNoise)
+    pltInput(vols)
+    preds = np.zeros((numPat, numSam, 9, 3, 1))
+    truth = np.zeros((numPat, 9, 3, 2))
+    hist, preds, truth = TPNet(vols, amps)
+    error(truth, preds)
+-----------------------------------------------------------------------------------------------------------------------
+if noise > 30:
+    poopy
+else:
+    read = open('TempPulseNet/Vars.txt', 'r+')
+    tmp = read.readlines()
+    noise = noise + 1
+    read.seek(0)
+    read.write(str(noise))
+read.close()
+-----------------------------------------------------------------------------------------------------------------------
+%%javascript
+//Python.exe Memory Error Work Around
+function restart_run_all(){
+    IPython.notebook.kernel.restart();
+    setTimeout(function(){
+        IPython.notebook.execute_all_cells();
+    }, 10000)
+}
+restart_run_all()
+-----------------------------------------------------------------------------------------------------------------------
+plt.figure(figsize=(6,5))
+plt.plot(hist.history['loss'])
+plt.plot(hist.history['val_loss'])
+plt.xlabel("Epoch", fontproperties = font_prop)
+plt.ylabel("Loss", fontproperties = font_prop)
+plt.legend (['Training', 'Validation'], loc = 1)
+plt.show()
