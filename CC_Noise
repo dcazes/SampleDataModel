@@ -1,0 +1,241 @@
+#######################################################################################################################
+## Project Name:    TempPulseNet                                                                                     ##
+## Project          Description: A data generator and an RNN to seperate the multiple components of a complex signal ##
+## Author:          Daniel Cazes                                                                                     ##
+## Date Created:    May 13, 2019                                                                                     ##
+## Date of Latest   Revision: Today                                                                                  ##
+#######################################################################################################################
+
+#############
+# Libraries #
+#############
+from keras.layers import ConvLSTM2D, BatchNormalization
+from sklearn.model_selection import train_test_split
+from scipy.ndimage import gaussian_filter
+#from keras.callbacks import TensorBoard
+import matplotlib.font_manager as fm
+from keras.models import Sequential
+import matplotlib.pyplot as plt
+import tensorflow as tf
+import talos as ta
+import numpy as np
+import csv
+import gc
+
+#############################
+# Data Generation Variables #
+#############################
+
+#Standard Deviation of Noise
+rangeNoise = 1
+
+#Number of Patients
+numPat = 100
+
+#Samples per Patient
+numSam = 200
+
+#Test Dataset Size
+testSize = 50
+
+#Scan Rate in Seconds per Sample (Hz)
+SR = 2
+
+#Center for Heart Rate Normal Distribution (BPM)
+cHR = 69
+    
+#Std. Dev. of Heart Rate (BPM)
+stdvHR = 5
+    
+#Center for Breathing Rate Normal Distribution (BMP)
+cBR = 13
+    
+#Std. Dev. of Heart Rate (BPM)
+stdvBR = 2
+
+#Data Dimensions
+rows = 3
+cols = 3
+depth = 3
+
+############################
+# Model Training Variables #
+############################
+
+#Number of Epochs
+nEpoch = 150
+
+#Validation Set Size
+valSize = 0.2
+
+#Optimizer
+opt = 'adam'
+
+#Loss Function
+lossFunc = 'MSE'
+
+#Tensorboard callback
+#tensorboard_callback = TensorBoard(log_dir='./logs')
+
+############################
+# Graph and File Variables #
+############################
+
+#Font
+font_prop = fm.FontProperties(size=16)
+
+#Predictions Vs Actual Name
+figName = "ConvLSTM"
+
+#Output Folder
+path = "TempPulseNet/"
+
+#HR File Name
+dispFile = "SlimDisp%s.csv" %rangeNoise
+
+#Disparity Error CSV
+#errorFile = "TPNdata.csv"
+
+#Run Details (Explain how to compare this Error to other runs' error)
+dets = "Compute Canada"
+
+#####################
+# Dataset Generator # 
+#####################
+
+def dataGen (maxNoise):
+
+    #Random Amplitude Generation
+    A = np.random.random()
+    C = np.random.random()
+
+    #Normally Distributed Frequency Generation
+    HR = np.random.normal(loc = cHR, scale = stdvHR)
+    BR = np.random.normal(loc = cBR, scale = stdvBR)
+
+    #Training Time Series Creation
+    x = [(A * np.sin((2 * np.pi * (HR / 60)) * i)) +
+         (C * np.cos((2 * np.pi * (BR / 60)) * i)) for i in np.arange (0, (1/SR) * numSam, (1/SR))]
+
+    #Make time series into 3D + time
+    volumes = np.zeros((numSam, rows, cols, depth))
+    volumes[:, int(rows/2), int(cols/2), int(depth/2)] = np.reshape(x, (numSam))
+
+    #Smooth the signal across three dimensions
+    smeared_volumes = gaussian_filter(volumes, sigma=(0, 0.5, 0.5, 0.5), mode='constant')
+
+    if rangeNoise > 0:
+        #Noise Generation
+        patStdv = np.random.rand() * maxNoise
+        voxNoise = np.random.normal(loc = 0, scale = patStdv, size = (numSam, rows, cols, depth))
+
+        #Adding Noise to Signal
+        for i in range (rows):
+            for j in range (cols):
+                for k in range (depth):
+                    smeared_volumes[:, i, j, k] = smeared_volumes[:, i, j, k] + voxNoise[:, i, j, k]
+        del patStdv, voxNoise
+
+    #Data Reshaping to 2D + time
+    reshaped_volumes = np.zeros((numSam, rows*depth, cols, 1))
+    for i in range(depth):
+        reshaped_volumes[:, (i*depth):((i+1)*depth), :, 0] = smeared_volumes [:, :, :, i]
+
+    #Ouput Map is same shape as input plus 4th dimension for individual components
+    Y = np.array([A, C])
+    output = np.zeros ((rows, cols, depth, 2))
+    output [int(rows/2), int(cols/2), int(depth/2), :] = Y
+    smeared_output = gaussian_filter(output, sigma=(0.5, 0.5, 0.5, 0), mode='constant')                
+
+    #Reshape Ouput
+    reshaped_output = np.zeros((rows*depth, cols, 2))
+    for i in range(depth):
+        reshaped_output[(i*depth):((i+1)*depth), :, :] = smeared_output[:, :, i, :]
+
+    del A, C, HR, BR
+    del x, volumes, smeared_volumes
+    del Y, output
+    gc.collect()
+
+    return reshaped_volumes, reshaped_output
+
+#########
+# Model #
+#########
+
+def TPNet():
+
+    model = Sequential()
+    
+    model.add (BatchNormalization(input_shape=(numSam, rows * depth, cols, 1), axis = 4))
+    model.add(ConvLSTM2D(4, kernel_size = (1, 2), padding='same', return_sequences=True))
+    model.add (BatchNormalization(axis = 4))
+    model.add(ConvLSTM2D(2, kernel_size = (1, 2), padding='same', return_sequences=False))
+    model.compile(optimizer = opt, loss = lossFunc)
+
+    x_train, x_val, y_train, y_val = train_test_split(vols, amps, test_size = 0.2, random_state = 1)
+    history = model.fit(x_train, y_train, epochs= nEpoch, validation_data=(x_val, y_val))
+
+    del x_train, y_train, x_val, y_val
+    gc.collect()
+    
+    return model, history
+
+##############
+# Test Model #
+##############
+
+def testModel (model):
+    #Testing the Model on Unseen Dataset
+    testVols = np.zeros((testSize, numSam, rows * depth, cols, 1))
+    testAmps = np.zeros((testSize, rows * depth, cols, 2))
+    for i in range (testSize):
+        testVols[i, :, :, :, :], testAmps[i, :, :, :] = dataGen (rangeNoise)
+    predictions = model.predict (testVols)
+
+    del testVols
+    gc.collect()
+
+    return predictions, testAmps
+
+######################################
+#  Error Calculation / Write to File #
+######################################
+
+def error(Y_test, pred):
+
+    #Disparity Error for Heart Rate signal
+    dispHR = 100 * ((Y_test[:, int(rows*depth/2), int(cols/2), 0] - pred [:, int(rows*depth/2), int(cols/2), 0]) / (Y_test[:, int(rows*depth/2), int(cols/2), 0] + pred [:, int(rows*depth/2), int(cols/2), 0]))
+    dispBR = 100 * ((Y_test[:, int(rows*depth/2), int(cols/2), 1] - pred [:, int(rows*depth/2), int(cols/2), 1]) / (Y_test[:, int(rows*depth/2), int(cols/2), 1] + pred [:, int(rows*depth/2), int(cols/2), 1]))
+    histDispHR = dispHR.flatten()
+    histDispBR = dispBR.flatten()
+
+    #Write 
+    with open(path + dispFile, 'a') as csvFile:
+        for i in range (len(histDispHR)):
+            row = [histDispHR[i], histDispBR[i]]
+            writer = csv.writer(csvFile)
+            writer.writerow(row)
+    csvFile.close()
+    
+########
+# Main #
+########
+
+for stdvNoise in np.arange(0, rangeNoise, 0.1):
+    vols = np.zeros((numPat, numSam, rows * depth, cols,1))
+    amps = np.zeros((numPat, rows * depth, cols, 2))
+
+    for i in range (numPat):
+        vols[i, :, :, :, :], amps[i, :, :, :] = dataGen (rangeNoise)
+    mod, hist = TPNet()
+
+
+    preds = np.zeros((numPat, numSam, rows * depth, cols, 1))
+    truth = np.zeros((numPat, rows * depth, cols, 2))
+    preds, truth = testModel(mod)
+    error(truth, preds)
+
+    del vols, amps
+    del preds, truth
+    gc.collect()
