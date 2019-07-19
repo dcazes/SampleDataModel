@@ -1,0 +1,197 @@
+#######################################################################################################################
+## Project Name:    TempPulseNet                                                                                     ##
+## Project          Description: A data generator and an RNN to seperate the multiple components of a complex signal ##
+## Author:          Daniel Cazes                                                                                     ##
+## Date Created:    May 13, 2019                                                                                     ##
+## Date of Latest   Revision: Today                                                                                  ##
+#######################################################################################################################
+
+###################
+# Python Packages #
+###################
+from keras.layers import ConvLSTM2D, BatchNormalization, LeakyReLU, Dropout
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import normalize, minmax_scale 
+#from scipy.ndimage import gaussian_filter
+#import matplotlib.font_manager as fm
+from keras.models import Sequential
+import matplotlib.pyplot as plt
+from nibabel.testing import data_path
+import nibabel as nib
+import tensorflow as tf
+import seaborn as sns
+#import talos as ta
+import numpy as np
+#import csv
+import gc
+import os
+
+#sns.set()
+#########################
+# Data Import Variables #
+#########################
+#Samples per Patient
+numSam = 195
+
+#Data Dimensions
+rows = 80
+cols = 80
+depth = 28
+
+#Data Dimension Cut
+rowRed = 10
+colRed = 8
+#depthRed = 0
+
+rowCut = rows - (rowRed * 2)
+colCut = cols - (colRed * 2)
+#depthCut = depth - (depthRed * 2)
+
+############################
+# Model Training Variables #
+############################
+
+#Number of Epochs
+nEpoch = 5
+
+#Validation Set Size
+valSize = 0.2
+
+#Optimizer
+opt = tf.train.AdamOptimizer(learning_rate=0.0005)
+
+#Loss Function
+lossFunc = 'MSE'
+
+############################
+# Graph and File Variables #
+############################
+
+#Font
+#font_prop = fm.FontProperties(size=16)
+
+#Predictions Vs Actual Name
+figName = "ConvLSTM"
+
+#Output Folder
+path = "TempPulseNet/"
+
+#Time Series
+TSFolder = "TimeSeries/"
+
+#Run Details (Explain how to compare this Error to other runs' error)
+dets = "SliceData"
+
+##################
+# Importing Data #
+##################
+def ImportData ():
+    
+    #print(numList[i])
+    #sns.heatmap(inDataCut[i, :, :, 0, 20])
+    #plt.show()    
+    
+    #Define List of RISE subject numbers
+    numList = ["2078", "2080", "2081", "2082", "2083", "2084", "2092", "2093", "2094", "2102"]
+    numPat = len(numList)
+    
+    #Create Arrays
+    inData = np.zeros((numPat, rowCut, colCut, depth, numSam))
+    outData = np.zeros((numPat, rowCut, colCut, depth))
+
+    
+    for i in range (len(numList)):
+        #Assign Path To NII Files
+        inDataFull = np.zeros((rows, cols, depth, numSam))
+        outDataFull = np.zeros((rows, cols, depth))
+        rawInput = os.path.join(data_path, 'E:/RISE/Pulsatility_Data_Processed_SAtwi/RISE%s/RISE%s_echo2_bet.nii') %(numList[i], numList[i])
+        rawOutput = os.path.join(data_path, 'E:/RISE/Pulsatility_Data_Processed_SAtwi/RISE%s/echo2_100vol_cardiac_RISE%s_RMS.nii') %(numList[i], numList[i])
+
+        #Load Data into Img Variable
+        inImg = nib.load(rawInput)
+        outImg = nib.load(rawOutput)
+
+        #Convert to Numpy Array
+        inDataFull = inImg.get_fdata()
+        outDataFull = outImg.get_fdata()
+        
+        #Cut some edge voxels
+        inData[i, :, :, :, :] = inDataFull[rowRed:-rowRed, colRed:-colRed, :, :]
+        outData[i, :, :, :] = outDataFull[rowRed:-rowRed, colRed:-colRed, :]
+        
+        del rawInput, inImg, inDataFull, rawOutput, outImg, outDataFull
+        gc.collect()
+
+    #Move time dimension to correct spot
+    inData = np.moveaxis(inData, 4, 1)
+    
+    #Flatten and MinMax Scale Data
+    flatIn = inData.flatten()
+    flatIn = minmax_scale(flatIn)
+    inData = flatIn.reshape(inData.shape)
+    flatOut = outData.flatten()
+    flatOut = minmax_scale(flatOut)
+    outData = flatOut.reshape(outData.shape)   
+    
+    #define reshaping array
+    reshaped_volumes = np.zeros((numPat * depth, numSam, rowCut, colCut, 1))
+    reshaped_output = np.zeros((numPat * depth, rowCut, colCut, 1))
+
+    for j in range(numPat):
+        for i in range (depth):
+            reshaped_volumes[((j*depth) + i), :, :, :, 0] = inData[j, :, :, :, i]
+            reshaped_output[((j*depth) + i), :, :, 0] = outData[j, :, :, i]
+            
+    del flatIn, inData, flatOut, outData
+    gc.collect()
+    return reshaped_volumes, reshaped_output
+
+#########
+# Model #
+#########
+
+def TPNet(fMRI, pMap):
+
+    model = Sequential()
+
+    model.add (BatchNormalization(input_shape=(numSam, rowCut, colCut, 1), axis = -1))
+    model.add(ConvLSTM2D(1, kernel_size = (1, 1), padding='same', return_sequences=True, activation = None))
+    model.add(LeakyReLU(0))
+    model.add (BatchNormalization(axis = -1))
+    model.add(ConvLSTM2D(1, kernel_size = (1, 1), padding='same', return_sequences=False, activation = None))
+    model.add(LeakyReLU(0))
+
+    model.compile(optimizer = opt, loss = lossFunc)
+
+    #Split data into training and validation set and fit
+    x_train, x_val, y_train, y_val = train_test_split(fMRI, pMap, test_size = 0.2)
+    history = model.fit(x_train, y_train, epochs= nEpoch, validation_data=(x_val, y_val))
+
+    del x_train, y_train
+    gc.collect()
+
+    return model, history, x_val, y_val
+
+######################################
+#  Error Calculation / Write to File #
+######################################
+
+def error(Y_test, pred):
+
+    #Disparity Error for input signal middle voxel
+    dispHR = 100 * ((Y_test - pred)/(Y_test + pred))
+
+    for i in range (len(Y_test[:, 0, 0, 0])):
+        sns.heatmap(Y_test[i, :, :, 0])
+        plt.show()
+
+        sns.heatmap(pred[i, :, :, 0])
+        plt.show()
+
+########
+# Main #
+########
+
+volumes, pulseMaps = ImportData()
+mod, hist, testfMRI, testpMap = TPNet(volumes, pulseMaps)
+predictions = mod.predict (testfMRI)
