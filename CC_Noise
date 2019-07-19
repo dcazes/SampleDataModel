@@ -6,34 +6,43 @@
 ## Date of Latest   Revision: Today                                                                                  ##
 #######################################################################################################################
 
-#############
-# Libraries #
-#############
-from keras.layers import ConvLSTM2D, BatchNormalization
+###################
+# Python Packages #
+###################
+from keras.layers import ConvLSTM2D, BatchNormalization, LeakyReLU, Dropout
 from sklearn.model_selection import train_test_split
 from scipy.ndimage import gaussian_filter
-#from keras.callbacks import TensorBoard
 import matplotlib.font_manager as fm
 from keras.models import Sequential
 import matplotlib.pyplot as plt
+from nibabel.testing import data_path
 import tensorflow as tf
+import seaborn as sns
 import talos as ta
 import numpy as np
 import csv
 import gc
+import os
 
+sns.set()
 #############################
 # Data Generation Variables #
 #############################
 
+#Number of Components in Signal
+#numComp = 1
+
 #Standard Deviation of Noise
-rangeNoise = 1
+rangeNoise = 1.5
+
+#Standard Deviation of Gaussian Filter
+stdvFilt = 1.5
 
 #Number of Patients
-numPat = 100
+numPat = 5
 
 #Samples per Patient
-numSam = 200
+numSam = 10
 
 #Test Dataset Size
 testSize = 50
@@ -54,9 +63,9 @@ cBR = 13
 stdvBR = 2
 
 #Data Dimensions
-rows = 3
-cols = 3
-depth = 3
+rows = 9
+cols = 9
+depth = 9
 
 ############################
 # Model Training Variables #
@@ -74,9 +83,6 @@ opt = 'adam'
 #Loss Function
 lossFunc = 'MSE'
 
-#Tensorboard callback
-#tensorboard_callback = TensorBoard(log_dir='./logs')
-
 ############################
 # Graph and File Variables #
 ############################
@@ -90,11 +96,8 @@ figName = "ConvLSTM"
 #Output Folder
 path = "TempPulseNet/"
 
-#HR File Name
-dispFile = "SlimDisp%s.csv" %rangeNoise
-
-#Disparity Error CSV
-#errorFile = "TPNdata.csv"
+#Time Series
+TSFolder = "TimeSeries/"
 
 #Run Details (Explain how to compare this Error to other runs' error)
 dets = "Compute Canada"
@@ -107,57 +110,87 @@ def dataGen (maxNoise):
 
     #Random Amplitude Generation
     A = np.random.random()
-    C = np.random.random()
 
     #Normally Distributed Frequency Generation
     HR = np.random.normal(loc = cHR, scale = stdvHR)
-    BR = np.random.normal(loc = cBR, scale = stdvBR)
 
-    #Training Time Series Creation
-    x = [(A * np.sin((2 * np.pi * (HR / 60)) * i)) +
-         (C * np.cos((2 * np.pi * (BR / 60)) * i)) for i in np.arange (0, (1/SR) * numSam, (1/SR))]
+    #Time Series Creation
+    x = [(A * np.sin((2 * np.pi * (HR / 60)) * i)) for i in np.arange (0, (1/SR) * numSam, (1/SR))]
 
-    #Make time series into 3D + time
+    #Place time series 'x' in center voxels of input data
     volumes = np.zeros((numSam, rows, cols, depth))
-    volumes[:, int(rows/2), int(cols/2), int(depth/2)] = np.reshape(x, (numSam))
+    for i in np.arange (-2, 3, 1):
+        for j in np.arange (-2, 3, 1):
+            for k in np.arange (-2, 3, 1):
+                volumes[:, int(rows/2) + i, int(cols/2) + j, int(depth/2) + k] = np.reshape(x, (numSam))
 
-    #Smooth the signal across three dimensions
-    smeared_volumes = gaussian_filter(volumes, sigma=(0, 0.5, 0.5, 0.5), mode='constant')
+    #Smooth the input signal across three dimensions
+        smeared_volumes = gaussian_filter(volumes, sigma=(0, stdvFilt, stdvFilt, stdvFilt), mode='constant')
 
-    if rangeNoise > 0:
-        #Noise Generation
-        patStdv = np.random.rand() * maxNoise
+    #Calculate absolute signal to noise ratio
+    #Find the range of the middle voxel signal, divide it by the range of the middle noise voxel
+    SN = 0
+    SN1 = (np.amax(smeared_volumes[:, int(rows/2), int(cols/2), int(depth/2)]) -
+               np.amin(smeared_volumes[:, int(rows/2), int(cols/2), int(depth/2)]))
+
+    if maxNoise > 0:
+        #Random standard deviation up to maxNoise used for noise generation
+        patStdv = np.random.rand() * maxNoise * SN1
+        
+        #Noise generated in same shape as input
         voxNoise = np.random.normal(loc = 0, scale = patStdv, size = (numSam, rows, cols, depth))
 
+        #Find the range of the noise signal in the middle voxel
+        SN2 = (np.amax(voxNoise[:, int(rows/2), int(cols/2), int(depth/2)]) -
+               np.amin(voxNoise[:, int(rows/2), int(cols/2), int(depth/2)]))
+        SN = SN1/SN2
+        
         #Adding Noise to Signal
         for i in range (rows):
             for j in range (cols):
                 for k in range (depth):
                     smeared_volumes[:, i, j, k] = smeared_volumes[:, i, j, k] + voxNoise[:, i, j, k]
-        del patStdv, voxNoise
+                    
+        del voxNoise
 
-    #Data Reshaping to 2D + time
+    #Data Reshaping to 2D + time (depth becomes additional rows)
     reshaped_volumes = np.zeros((numSam, rows*depth, cols, 1))
     for i in range(depth):
         reshaped_volumes[:, (i*depth):((i+1)*depth), :, 0] = smeared_volumes [:, :, :, i]
 
-    #Ouput Map is same shape as input plus 4th dimension for individual components
-    Y = np.array([A, C])
-    output = np.zeros ((rows, cols, depth, 2))
-    output [int(rows/2), int(cols/2), int(depth/2), :] = Y
-    smeared_output = gaussian_filter(output, sigma=(0.5, 0.5, 0.5, 0), mode='constant')                
+    #Ouput map 3D, (3 spatial, 1 component space) dimension for individual components
+    Y = np.array([A])
+    output = np.zeros ((rows, cols, depth, 1))
+    
+    #Place amplitude in central voxels of output data
+    for i in np.arange (-2, 3, 1):
+        for j in np.arange (-2, 3, 1):
+            for k in np.arange (-2, 3, 1):
+                output[int(rows/2) + i, int(cols/2) + j, int(depth/2) + k, :] = Y
 
+    #Smooth the output signal across three dimensions
+    smeared_output = gaussian_filter(output, sigma=(stdvFilt, stdvFilt, stdvFilt, 0), mode='constant')
+    
     #Reshape Ouput
-    reshaped_output = np.zeros((rows*depth, cols, 2))
+    reshaped_output = np.zeros((rows*depth, cols, 1))
     for i in range(depth):
         reshaped_output[(i*depth):((i+1)*depth), :, :] = smeared_output[:, :, i, :]
-
-    del A, C, HR, BR
+        
+    sns.heatmap(output[:,:,int(depth/2), 0], vmin = 0, vmax = 1)
+    plt.show()
+    sns.heatmap(smeared_output[:,:,int(depth/2), 0], vmin = 0, vmax = 1)
+    plt.show()
+        
+    del A, HR
     del x, volumes, smeared_volumes
-    del Y, output
     gc.collect()
 
-    return reshaped_volumes, reshaped_output
+    return reshaped_volumes, reshaped_output, SN, SN1
+
+##################
+# Importing Data #
+##################
+
 
 #########
 # Model #
@@ -168,12 +201,16 @@ def TPNet():
     model = Sequential()
     
     model.add (BatchNormalization(input_shape=(numSam, rows * depth, cols, 1), axis = 4))
-    model.add(ConvLSTM2D(4, kernel_size = (1, 2), padding='same', return_sequences=True))
+    model.add(ConvLSTM2D(4, kernel_size = (1, 3), padding='same', return_sequences=True, activation = None))
+    model.add(LeakyReLU(0.3))
     model.add (BatchNormalization(axis = 4))
-    model.add(ConvLSTM2D(2, kernel_size = (1, 2), padding='same', return_sequences=False))
+    model.add(ConvLSTM2D(1, kernel_size = (1, 3), padding='same', return_sequences=False, activation = None))
+    model.add(LeakyReLU(0.3))
+    
     model.compile(optimizer = opt, loss = lossFunc)
 
-    x_train, x_val, y_train, y_val = train_test_split(vols, amps, test_size = 0.2, random_state = 1)
+    #Split data into training and validation set and fit
+    x_train, x_val, y_train, y_val = train_test_split(vols, amps, test_size = 0.2)
     history = model.fit(x_train, y_train, epochs= nEpoch, validation_data=(x_val, y_val))
 
     del x_train, y_train, x_val, y_val
@@ -185,56 +222,82 @@ def TPNet():
 # Test Model #
 ##############
 
-def testModel (model):
-    #Testing the Model on Unseen Dataset
+def testModel (model, rNoise):
+    #Creating test set arrays
     testVols = np.zeros((testSize, numSam, rows * depth, cols, 1))
-    testAmps = np.zeros((testSize, rows * depth, cols, 2))
+    testAmps = np.zeros((testSize, rows * depth, cols, 1))
+    testSN = np.zeros ((testSize))
+    testSig = np.zeros((testSize))
+
+    #Fill arrays
     for i in range (testSize):
-        testVols[i, :, :, :, :], testAmps[i, :, :, :] = dataGen (rangeNoise)
+        testVols[i, :, :, :, :], testAmps[i, :, :, :], testSN[i], testSig[i] = dataGen (rNoise)
+
+    #Output file writes time series to text file
+    timeFile = "A1K_TS_NL%s.txt" %rNoise
+    t = open (path + TSFolder + timeFile, "w+")
+    for i in range (testSize):
+        for j in range (numSam):
+            t.write ("%s " %testVols[i, j, int(rows*depth/2), int(cols/2), 0])
+        t.write("\n")
     predictions = model.predict (testVols)
 
     del testVols
     gc.collect()
 
-    return predictions, testAmps
+    return predictions, testAmps, testSN, testSig
 
 ######################################
 #  Error Calculation / Write to File #
 ######################################
 
-def error(Y_test, pred):
+def error(Y_test, pred, SNRval, rNoise, sigVal):
 
-    #Disparity Error for Heart Rate signal
-    dispHR = 100 * ((Y_test[:, int(rows*depth/2), int(cols/2), 0] - pred [:, int(rows*depth/2), int(cols/2), 0]) / (Y_test[:, int(rows*depth/2), int(cols/2), 0] + pred [:, int(rows*depth/2), int(cols/2), 0]))
-    dispBR = 100 * ((Y_test[:, int(rows*depth/2), int(cols/2), 1] - pred [:, int(rows*depth/2), int(cols/2), 1]) / (Y_test[:, int(rows*depth/2), int(cols/2), 1] + pred [:, int(rows*depth/2), int(cols/2), 1]))
+    #Disparity Error for input signal middle voxel
+    dispHR = 100 * ((Y_test[:, int(rows*depth/2), int(cols/2), 0] - pred [:, int(rows*depth/2), int(cols/2), 0])/ 
+                    (Y_test[:, int(rows*depth/2), int(cols/2), 0] + pred [:, int(rows*depth/2), int(cols/2), 0]))
+
+    #flatten data for writing to file
     histDispHR = dispHR.flatten()
-    histDispBR = dispBR.flatten()
 
-    #Write 
+    #File Name
+    dispFile = "A1K_%s.csv" %rNoise
+
+    #Write to file
     with open(path + dispFile, 'a') as csvFile:
         for i in range (len(histDispHR)):
-            row = [histDispHR[i], histDispBR[i]]
+            row = [histDispHR[i], SNRval[i], sigVal[i]]
             writer = csv.writer(csvFile)
             writer.writerow(row)
     csvFile.close()
-    
+
 ########
 # Main #
 ########
 
-for stdvNoise in np.arange(0, rangeNoise, 0.1):
+for stdvNoise in np.arange(0.0, rangeNoise, 0.1):
+    #Create arrays
     vols = np.zeros((numPat, numSam, rows * depth, cols,1))
-    amps = np.zeros((numPat, rows * depth, cols, 2))
+    amps = np.zeros((numPat, rows * depth, cols, 1))
+    SNR = np.zeros((numPat))
+    sig = np.zeros((numPat))
 
+    #Fill arrays with datasets
     for i in range (numPat):
-        vols[i, :, :, :, :], amps[i, :, :, :] = dataGen (rangeNoise)
-    mod, hist = TPNet()
+        vols[i, :, :, :, :], amps[i, :, :, :], SNR[i], sig[i] = dataGen (stdvNoise)
 
+    #Train model
+    #od, hist = TPNet()
 
-    preds = np.zeros((numPat, numSam, rows * depth, cols, 1))
-    truth = np.zeros((numPat, rows * depth, cols, 2))
-    preds, truth = testModel(mod)
-    error(truth, preds)
+    ##Create arrays
+    #preds = np.zeros((numPat, numSam, rows * depth, cols, 1))
+    #truth = np.zeros((numPat, rows * depth, cols, 1))
+    #testSNR = np.zeros ((testSize))
+    
+    #Test models predictions
+    #preds, truth, testSNR, testSig = testModel(mod, stdvNoise)
+    ##Calculate and write errors
+    #error(truth, preds, testSNR, stdvNoise, testSig)
 
     del vols, amps
     del preds, truth
