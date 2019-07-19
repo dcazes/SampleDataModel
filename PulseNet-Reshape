@@ -1,0 +1,320 @@
+#######################################################################################################################
+## Project Name:    TempPulseNet                                                                                     ##
+## Project          Description: A data generator and an RNN to seperate the multiple components of a complex signal ##
+## Author:          Daniel Cazes                                                                                     ##
+## Date Created:    May 13, 2019                                                                                     ##
+## Date of Latest   Revision: Today                                                                                  ##
+#######################################################################################################################
+
+###################
+# Python Packages #
+###################
+from keras.layers import ConvLSTM2D, BatchNormalization, LeakyReLU, Dropout
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import normalize, minmax_scale 
+from scipy.ndimage import gaussian_filter
+import matplotlib.font_manager as fm
+from keras.models import Sequential
+import matplotlib.pyplot as plt
+from nibabel.testing import data_path
+import nibabel as nib
+import tensorflow as tf
+import seaborn as sns
+import talos as ta
+import numpy as np
+import csv
+import gc
+import os
+
+#sns.set()
+#############################
+# Data Generation Variables #
+#############################
+
+#Number of Components in Signal
+#numComp = 1
+
+#Standard Deviation of Noise
+rangeNoise = 1.5
+
+#Standard Deviation of Gaussian Filter
+stdvFilt = 1.5
+
+#Number of Patients
+
+
+#Samples per Patient
+numSam = 195
+
+#Test Dataset Size
+#testSize = 50
+
+#Scan Rate in Seconds per Sample (Hz)
+SR = 2
+
+#Center for Heart Rate Normal Distribution (BPM)
+cHR = 69
+    
+#Std. Dev. of Heart Rate (BPM)
+stdvHR = 5
+    
+#Center for Breathing Rate Normal Distribution (BMP)
+cBR = 13
+    
+#Std. Dev. of Heart Rate (BPM)
+stdvBR = 2
+
+#Data Dimensions
+rows = 80
+cols = 80
+depth = 28
+
+#Data Dimension Cut
+rowRed = 10
+colRed = 8
+depthRed = 13
+
+rowCut = rows - (rowRed * 2)
+colCut = cols - (colRed * 2)
+depthCut = depth - (depthRed * 2)
+
+############################
+# Model Training Variables #
+############################
+
+#Number of Epochs
+nEpoch = 10
+
+#Validation Set Size
+valSize = 0.2
+
+#Optimizer
+opt = tf.train.AdamOptimizer(learning_rate=0.0005)
+
+#Loss Function
+lossFunc = 'MSE'
+
+############################
+# Graph and File Variables #
+############################
+
+#Font
+font_prop = fm.FontProperties(size=16)
+
+#Predictions Vs Actual Name
+figName = "ConvLSTM"
+
+#Output Folder
+path = "TempPulseNet/"
+
+#Time Series
+TSFolder = "TimeSeries/"
+
+#Run Details (Explain how to compare this Error to other runs' error)
+dets = "Compute Canada"
+
+#####################
+# Dataset Generator # 
+#####################
+
+def dataGen (maxNoise):
+
+    #Random Amplitude Generation
+    A = np.random.random()
+
+    #Normally Distributed Frequency Generation
+    HR = np.random.normal(loc = cHR, scale = stdvHR)
+
+    #Time Series Creation
+    x = [(A * np.sin((2 * np.pi * (HR / 60)) * i)) for i in np.arange (0, (1/SR) * numSam, (1/SR))]
+
+    #Place time series 'x' in center voxels of input data
+    volumes = np.zeros((numSam, rows, cols, depth))
+    for i in np.arange (-2, 3, 1):
+        for j in np.arange (-2, 3, 1):
+            for k in np.arange (-2, 3, 1):
+                volumes[:, int(rows/2) + i, int(cols/2) + j, int(depth/2) + k] = np.reshape(x, (numSam))
+
+    #Smooth the input signal across three dimensions
+    smeared_volumes = gaussian_filter(volumes, sigma=(0, stdvFilt, stdvFilt, stdvFilt), mode='constant')
+
+    #Calculate absolute signal to noise ratio
+    #Find the range of the middle voxel signal, divide it by the range of the middle noise voxel
+    SN = 0
+    SN1 = (np.amax(smeared_volumes[:, int(rows/2), int(cols/2), int(depth/2)]) -
+               np.amin(smeared_volumes[:, int(rows/2), int(cols/2), int(depth/2)]))
+
+    if maxNoise > 0:
+        #Random standard deviation up to maxNoise used for noise generation
+        patStdv = np.random.rand() * maxNoise * SN1
+        
+        #Noise generated in same shape as input
+        voxNoise = np.random.normal(loc = 0, scale = patStdv, size = (numSam, rows, cols, depth))
+
+        #Find the range of the noise signal in the middle voxel
+        SN2 = (np.amax(voxNoise[:, int(rows/2), int(cols/2), int(depth/2)]) -
+               np.amin(voxNoise[:, int(rows/2), int(cols/2), int(depth/2)]))
+        SN = SN1/SN2
+        
+        #Adding Noise to Signal
+        for i in range (rows):
+            for j in range (cols):
+                for k in range (depth):
+                    smeared_volumes[:, i, j, k] = smeared_volumes[:, i, j, k] + voxNoise[:, i, j, k]
+                    
+        del voxNoise
+
+    #Data Reshaping to 2D + time (depth becomes additional rows)
+    reshaped_volumes = np.zeros((numSam, rows*depth, cols, 1))
+    for i in range(depth):
+        reshaped_volumes[:, (i*depth):((i+1)*depth), :, 0] = smeared_volumes [:, :, :, i]
+
+    #Ouput map 3D, (3 spatial, 1 component space) dimension for individual components
+    Y = np.array([A])
+    output = np.zeros ((rows, cols, depth, 1))
+    
+    #Place amplitude in central voxels of output data
+    for i in np.arange (-2, 3, 1):
+        for j in np.arange (-2, 3, 1):
+            for k in np.arange (-2, 3, 1):
+                output[int(rows/2) + i, int(cols/2) + j, int(depth/2) + k, :] = Y
+
+    #Smooth the output signal across three dimensions
+    smeared_output = gaussian_filter(output, sigma=(stdvFilt, stdvFilt, stdvFilt, 0), mode='constant')
+
+    #Reshape Ouput
+    reshaped_output = np.zeros((rows*depth, cols, 1))
+    for i in range(depth):
+        reshaped_output[(i*depth):((i+1)*depth), :, :] = smeared_output[:, :, i, :]
+        
+    #sns.heatmap(output[:,:,int(depth/2), 0], vmin = 0, vmax = 1)
+    #plt.show()
+    #sns.heatmap(smeared_output[:,:,int(depth/2), 0], vmin = 0, vmax = 1)
+    #plt.show()
+        
+    del A, HR
+    del x, volumes, smeared_volumes
+    gc.collect()
+
+    return reshaped_volumes, reshaped_output, SN, SN1
+
+##################
+# Importing Data #
+##################
+def ImportData ():
+    numList = ["2078", "2080", "2081", "2082", "2083", "2084", "2092", "2093", "2094", "2102"]
+    numPat = len(numList)
+    # 
+    
+    inData = np.zeros((numPat, rows, cols, depth, numSam))
+    outData = np.zeros((numPat, rows, cols, depth))
+    inDataCut = np.zeros((numPat, rowCut, colCut, depthCut - 1, numSam))
+    outDataCut = np.zeros((numPat, rowCut, colCut, depthCut - 1))
+
+    for i in range (len(numList)):
+        #Assign Path To NII Files
+        rawInput = os.path.join(data_path, 'E:/RISE/Pulsatility_Data_Processed_SAtwi/RISE%s/RISE%s_echo2_bet.nii') %(numList[i], numList[i])
+        rawOutput = os.path.join(data_path, 'E:/RISE/Pulsatility_Data_Processed_SAtwi/RISE%s/echo2_100vol_cardiac_RISE%s_RMS.nii') %(numList[i], numList[i])
+
+        #Load Data into Img Variable
+        inImg = nib.load(rawInput)
+        outImg = nib.load(rawOutput)
+
+        #Convert to Numpy Array
+        inData[i, :, :, :, :] = inImg.get_fdata()
+        outData[i, :, :, :] = outImg.get_fdata()
+
+        inDataCut[i, :, :, :, :] = inData[i, rowRed:-rowRed, colRed:-colRed, depthRed + 1:-depthRed, :]
+        outDataCut[i, :, :, :] = outData[i, rowRed:-rowRed, colRed:-colRed, depthRed + 1:-depthRed]
+        
+        #print(numList[i])
+        #sns.heatmap(inDataCut[i, :, :, 0, 20])
+        #plt.show()
+        #sns.heatmap(outDataCut[i, :, :, 0])
+        #plt.show()
+
+    #Reshape Data
+    inDataCut = np.moveaxis(inDataCut, 4, 1)
+    
+    flatIn = inDataCut.flatten()
+    flatIn = minmax_scale(flatIn)
+    print (np.max(flatIn))
+    print (np.min(flatIn))
+    inDataCut = flatIn.reshape(inDataCut.shape)
+    
+    flatOut = outDataCut.flatten()
+    flatOut = minmax_scale(flatOut)
+    print (np.max(flatOut))
+    print (np.min(flatOut))
+    outDataCut = flatOut.reshape(outDataCut.shape)    
+    
+    reshaped_volumes = np.zeros((numPat, numSam, rowCut*(depthCut - 1), colCut, 1))
+    reshaped_output = np.zeros((numPat, rowCut*(depthCut - 1), colCut, 1))
+
+    for j in range(len(numList)):
+        for i in range(depthCut - 1):
+            reshaped_volumes[j, :, (i*rowCut):((i+1)*rowCut), :, 0] = inDataCut [j, :, :, :, i]
+            reshaped_output[j, (i*rowCut):((i+1)*rowCut), :, 0] = outDataCut[j, :, :, i]
+        #print(numList[i])
+        #sns.heatmap(inDataCut[j, 20, :, :, 0])
+        #plt.show()
+        #sns.heatmap(outDataCut[j, :, :, 0])
+        #plt.show()
+        #normalize(reshaped_output[j, :, :, 0], norm='l2', axis=0, copy=True, return_norm=False)
+            
+    del rawInput, inImg, inData, flatIn, inDataCut, rawOutput, outImg, outData, flatOut, outDataCut
+    gc.collect()
+    return reshaped_volumes, reshaped_output
+
+#########
+# Model #
+#########
+
+def TPNet(fMRI, pMap):
+
+    model = Sequential()
+
+    model.add (BatchNormalization(input_shape=(numSam, rowCut * (depthCut - 1), colCut, 1), axis = -1))
+    model.add(ConvLSTM2D(1, kernel_size = (3, 3), padding='same', return_sequences=True, activation = None))
+    model.add(LeakyReLU(0))
+    model.add (BatchNormalization(axis = -1))
+    model.add(ConvLSTM2D(1, kernel_size = (3, 3), padding='same', return_sequences=False, activation = None))
+    model.add(LeakyReLU(0))
+
+    model.compile(optimizer = opt, loss = lossFunc)
+
+    #Split data into training and validation set and fit
+    x_train, x_val, y_train, y_val = train_test_split(fMRI, pMap, test_size = 0.2)
+    history = model.fit(x_train, y_train, epochs= nEpoch, validation_data=(x_val, y_val))
+
+    del x_train, y_train
+    gc.collect()
+
+    return model, history, x_val, y_val
+
+##############
+# Test Model #
+##############
+
+######################################
+#  Error Calculation / Write to File #
+######################################
+
+def error(Y_test, pred):
+
+    #Disparity Error for input signal middle voxel
+    dispHR = 100 * ((Y_test - pred)/(Y_test + pred))
+    
+    sns.heatmap(Y_test[0, :, :, 0])
+    plt.show()
+    
+    sns.heatmap(pred[0, :, :, 0])
+    plt.show()
+
+########
+# Main #
+########
+
+volumes, pulseMaps = ImportData()
+mod, hist, testfMRI, testpMap = TPNet(volumes, pulseMaps)
+predictions = mod.predict (testfMRI)
