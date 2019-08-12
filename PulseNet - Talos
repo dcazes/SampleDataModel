@@ -1,0 +1,152 @@
+
+#####################################################################################################################################
+## Project Name:    TempPulseNet                                                                                                   ##
+## Project          Description: RCNN Aimed at Predicting Pulsatile Signal Present Within BOLD fMRI - Hyperparameter Optimization  ##
+## Author:          Daniel Cazes                                                                                                   ##
+## Date Created:    July 26, 2019                                                                                                  ##
+## Date of Latest   Revision: Today                                                                                                ##
+#####################################################################################################################################
+
+###################
+# Python Packages #
+###################
+from keras.layers import ConvLSTM2D, BatchNormalization, LeakyReLU, Dropout
+from sklearn.model_selection import train_test_split
+from keras.models import Sequential
+from keras.optimizers import Adam
+import tensorflow as tf
+import nibabel as nib
+import talos as ta
+import numpy as np
+import gc
+
+#########################
+# Data Import Variables #
+#########################
+#Samples per Patient
+numSam = 195
+
+#Data Dimensions
+rows = 80
+cols = 80
+depth = 28
+
+############################
+# Model Training Variables #
+############################
+
+#Validation Set Size
+valSize = 0.2
+
+#Loss Function
+lossFunc = 'MSE'
+
+############################
+# Graph and File Variables #
+############################
+
+#Predictions Vs Actual Name
+fileName = "EmpiricalTalos6Core"
+
+#Output Folder
+path = "TempPulseNet/"
+
+#Time Series
+TSFolder = "TimeSeries/"
+
+#Run Details (Explain how to compare this Error to other runs' error)
+dets = "SliceData"
+
+##########################
+# Hyperparameter Library #
+##########################
+
+pars = {
+    #Size of the Convolutional Kernel
+    'kernelSize': [3, 4, 5, 6],
+
+    #Number of Filters ('Units' in first ConvLSTM)
+    'filterNum': [2, 3, 4, 5],
+
+    #Alpha Value for LeakyReLU activation function
+    'alpha': [0, 0.1, 0.2, 0.3],
+
+    #Dropout Value
+    'dropout': [0, 0.1, 0.2, 0.3],
+
+    #Activation Functions
+    #'actFunc': ['relu', 'tanh', 'sigmoid'],
+
+    #Learning Rate
+    #'learnRate': [0.0005, 0.001],
+
+    #Number of Training Epochs
+    #'nEpoch': [50, 100, 150]
+}
+##################
+# Importing Data #
+##################
+def ImportData ():   
+
+    #Define List of RISE subject numbers
+    numList = ["2078", "2080", "2081", "2082", "2083", "2084", "2092", "2093", "2094", "2102"]
+    numPat = len(numList)
+
+    inData = np.zeros((numPat, rows, cols, depth, numSam))
+    outData = np.zeros((numPat, rows, cols, depth))
+
+    #Assign Path To NII Files
+    for i in range (len(numList)):
+
+        #Load Data into Img Variable
+        inData [i, :, :, :, :] = nib.nifti1.load('./RISE2/Pulsatility_Data_Processed_SAtwi/RISE%s/RISE%s_echo2_bet.nii' %(numList[i], numList[i])).get_fdata()
+        outData [i, :, :, :] = nib.nifti1.load('./RISE2/Pulsatility_Data_Processed_SAtwi/RISE%s/echo2_100vol_cardiac_RISE%s_RMS.nii' %(numList[i], numList[i])).get_fdata()
+
+    #Move time dimension to correct spot
+    inData = np.moveaxis(inData, 4, 1)
+
+    #define reshaping array
+    reshaped_volumes = np.zeros((numPat * depth, numSam, rows, cols, 1))
+    reshaped_output = np.zeros((numPat * depth, rows, cols, 1))
+
+    for j in range(numPat):
+        for i in range (depth):
+            reshaped_volumes[((j*depth) + i), :, :, :, 0] = inData[j, :, :, :, i]
+            reshaped_output[((j*depth) + i), :, :, 0] = outData[j, :, :, i]
+
+    gc.collect()
+    return reshaped_volumes, reshaped_output
+
+#########
+# Model #
+#########
+
+def TPNet(x_train, y_train, x_val, y_val, pars):
+
+    model = Sequential()
+
+    model.add (BatchNormalization(input_shape=(numSam, rows, cols, 1), axis = -1))
+    model.add(ConvLSTM2D(pars['filterNum'], kernel_size = pars ['kernelSize'], padding='same', return_sequences=True))
+    model.add(LeakyReLU(pars['alpha']))
+    model.add(Dropout(pars['dropout']))
+    model.add (BatchNormalization(axis = -1))
+    model.add(ConvLSTM2D(1, kernel_size = pars['kernelSize'], padding='same', return_sequences=False))
+    model.add(LeakyReLU(pars['alpha']))
+
+    opt = tf.train.AdamOptimizer(learning_rate= 0.01)
+    model.compile(optimizer = opt, loss = lossFunc)
+
+    out = model.fit(x_train, y_train, epochs= 100, validation_data=(x_val, y_val))
+
+    del x_train, y_train
+    gc.collect()
+
+    return out, model
+
+########
+# Main #
+########
+
+volumes, pulseMaps = ImportData()
+x_train, xVal, y_train, yVal = train_test_split(volumes, pulseMaps, test_size = 0.2)
+t = ta.Scan (x = x_train, y = y_train, x_val = xVal, y_val = yVal, params = pars, model = TPNet, print_params = True, dataset_name = fileName, grid_downsample=0.1, random_method='quantum')
